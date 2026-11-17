@@ -52,6 +52,12 @@ struct mDoneApp: App {
                 appContent
             }
         }
+        #if os(macOS)
+        // The window takes its size limits from its content: the sign-in
+        // form has a fixed size, so the window shrinks to fit it, and the
+        // main view (900 x 600 minimum, no maximum) stays freely resizable.
+        .windowResizability(.contentSize)
+        #endif
     }
 
     @ViewBuilder

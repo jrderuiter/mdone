@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The sign-in screen on the Mac now looks like a Mac app. The window shrinks to fit the form, with labels beside the fields, regular-size buttons, and Connect at the bottom right. Press Return to sign in.
+
 ## [1.24.0] - 2026-11-17
 
 ### Added

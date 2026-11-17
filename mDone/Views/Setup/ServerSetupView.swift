@@ -49,6 +49,34 @@ struct ServerSetupView: View {
     }
 
     var body: some View {
+        platformBody
+            // A prefilled URL (issue #80, after a session expires) deserves an
+            // immediate probe rather than waiting for a keystroke that may
+            // never come.
+            .task { checkServer(debounce: false) }
+            .onChange(of: authOptions) { _, _ in
+                // The picker's selection must stay inside its own ForEach or
+                // SwiftUI renders no segment as selected.
+                if !availableModes.contains(authMode) {
+                    authMode = availableModes.first ?? .apiToken
+                }
+            }
+            // The view is torn down the moment isAuthenticated flips, and a
+            // probe outliving it would write to @State on a dead view.
+            .onDisappear { probeTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var platformBody: some View {
+        #if os(macOS)
+        macBody
+        #else
+        iOSBody
+        #endif
+    }
+
+    /// The phone layout: one centered column with large touch targets.
+    private var iOSBody: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 32) {
@@ -206,22 +234,11 @@ struct ServerSetupView: View {
                     // reach every route mDone uses (issue #179). Earlier copy
                     // warned that tokens could not reorder tasks, which stopped
                     // being true when the position endpoint opened to them.
-                    if authMode == .credentials {
-                        // Names the directory when the server uses LDAP (#156).
-                        Text(authOptions.credentialsHint)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    } else {
-                        Text(
-                            "An API token can be revoked on its own without changing your password. Create it in Vikunja under Settings, API Tokens, with every permission, or some actions in mDone will fail."
-                        )
+                    hintText
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
-                    }
 
                     Spacer()
                 }
@@ -229,22 +246,220 @@ struct ServerSetupView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            // A prefilled URL (issue #80, after a session expires) deserves an
-            // immediate probe rather than waiting for a keystroke that may
-            // never come.
-            .task { checkServer(debounce: false) }
-            .onChange(of: authOptions) { _, _ in
-                // The picker's selection must stay inside its own ForEach or
-                // SwiftUI renders no segment as selected.
-                if !availableModes.contains(authMode) {
-                    authMode = availableModes.first ?? .apiToken
-                }
-            }
-            // The view is torn down the moment isAuthenticated flips, and a
-            // probe outliving it would write to @State on a dead view.
-            .onDisappear { probeTask?.cancel() }
         }
     }
+
+    /// The line under the form. Names the directory when the server uses
+    /// LDAP (#156).
+    private var hintText: Text {
+        if authMode == .credentials {
+            Text(authOptions.credentialsHint)
+        } else {
+            Text(
+                "An API token can be revoked on its own without changing your password. Create it in Vikunja under Settings, API Tokens, with every permission, or some actions in mDone will fail."
+            )
+        }
+    }
+
+    #if os(macOS)
+    /// The Mac layout: grouped rows in the System Settings look, with labels
+    /// beside leading-aligned fields, regular-size controls, and Connect at
+    /// the bottom right as the default button, so Return signs in.
+    ///
+    /// The groups are drawn by hand rather than with `Form` and
+    /// `.formStyle(.grouped)`: a grouped form scrolls inside itself, so it
+    /// reports no natural height and the window cannot fit it, and it
+    /// right-aligns its text fields. This view has a fixed width and its
+    /// natural height, and the window sizes itself to it
+    /// (`.windowResizability` in `mDoneApp`).
+    private var macBody: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 56, height: 56)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("mDone")
+                        .font(.title2.bold())
+                    Text("Connect to your Vikunja server")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            macGroup {
+                macRow("Server URL") {
+                    TextField(
+                        "Server URL",
+                        text: $serverURL,
+                        prompt: Text(verbatim: "https://vikunja.example.com")
+                    )
+                    .autocorrectionDisabled()
+                    .onChange(of: serverURL) { _, _ in checkServer(debounce: true) }
+                    .onSubmit { checkServer(debounce: false) }
+                }
+            }
+
+            if !ssoIsPrimary {
+                VStack(alignment: .leading, spacing: 6) {
+                    macGroup {
+                        if availableModes.count > 1 {
+                            macRow("Sign in with") {
+                                Picker("Sign in with", selection: $authMode) {
+                                    ForEach(availableModes, id: \.self) { mode in
+                                        Text(mode.label).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .fixedSize()
+                            }
+                            macDivider
+                        }
+
+                        if authMode == .credentials, authOptions.showsCredentials {
+                            macRow("Username") {
+                                TextField("Username", text: $username, prompt: Text("Required"))
+                                    .textContentType(.username)
+                                    .autocorrectionDisabled()
+                            }
+                            macDivider
+                            macRow("Password") {
+                                SecureField("Password", text: $password, prompt: Text("Required"))
+                                    .textContentType(.password)
+                            }
+
+                            if showsTOTPField {
+                                macDivider
+                                macRow("Two-factor code") {
+                                    TextField(
+                                        "Two-factor code",
+                                        text: $totpCode,
+                                        prompt: Text(totpPlaceholder)
+                                    )
+                                    .textContentType(.oneTimeCode)
+                                    .autocorrectionDisabled()
+                                }
+                            }
+                        } else {
+                            macRow("API Token") {
+                                SecureField(
+                                    "API Token",
+                                    text: $apiToken,
+                                    prompt: Text("Paste your API token")
+                                )
+                                .autocorrectionDisabled()
+                            }
+                        }
+                    }
+
+                    hintText
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                }
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if ssoIsPrimary {
+                macSSOButtons
+            } else {
+                HStack(spacing: 8) {
+                    if !authOptions.providers.isEmpty {
+                        macSSOButtons
+                    }
+                    Spacer()
+                    if isConnecting {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button("Connect") { connect() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(isFormIncomplete || isConnecting)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// One rounded group of rows, drawn like a row group in System Settings.
+    /// Put `macDivider` between the rows.
+    private func macGroup<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            content()
+        }
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        }
+    }
+
+    /// A label on the left and a borderless, leading-aligned field filling
+    /// the rest of the row. The field keeps its own title for VoiceOver.
+    private func macRow<Field: View>(
+        _ label: LocalizedStringKey,
+        @ViewBuilder field: () -> Field
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .frame(width: 120, alignment: .leading)
+            field()
+                .textFieldStyle(.plain)
+                .labelsHidden()
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private var macDivider: some View {
+        Divider()
+            .padding(.leading, 10)
+    }
+
+    /// SSO buttons at normal Mac size. When SSO is the only way in, the
+    /// first provider is the default button, so Return starts it.
+    @ViewBuilder
+    private var macSSOButtons: some View {
+        let disabled = isConnecting || ServerURL.normalized(serverURL) == nil
+        if ssoIsPrimary {
+            VStack(spacing: 8) {
+                ForEach(Array(authOptions.providers.enumerated()), id: \.element.id) { index, provider in
+                    Button { signInWithSSO(provider) } label: {
+                        Label("Continue with \(provider.name)", systemImage: "person.badge.key.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(index == 0 ? .defaultAction : nil)
+                    .disabled(disabled)
+                }
+                if isConnecting {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        } else {
+            ForEach(authOptions.providers) { provider in
+                Button { signInWithSSO(provider) } label: {
+                    Label("Continue with \(provider.name)", systemImage: "person.badge.key.fill")
+                }
+                .disabled(disabled)
+            }
+        }
+    }
+    #endif
 
     /// SSO buttons, plus a divider when they are sharing the screen with a
     /// password form.
